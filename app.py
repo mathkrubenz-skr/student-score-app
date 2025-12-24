@@ -1,16 +1,15 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import re
 
 # ==========================================
 # 🔧 ส่วนตั้งค่าระบบ (USER CONFIGURATION)
 # ==========================================
 
-# 1. วางลิงก์ Config ที่ได้จาก Google Sheets ตรงนี้
+# 🔴 ใส่ลิงก์ของคุณที่นี่เหมือนเดิมครับ
 CONFIG_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQcVvVYZJXwfVOjEbb-wgg0tB5AYKNOJb6soJaP1oJSKnWxSNYrI4FxwYgqJKStaSALsv6FvePLlbE1/pub?gid=0&single=true&output=csv"
-
-# 2. วางลิงก์คะแนนของแต่ละห้องที่นี่ (เพิ่มห้องได้เรื่อยๆ ตามรูปแบบ)
 SHEET_URLS = {
     "213": "https://docs.google.com/spreadsheets/d/e/2PACX-1vQcVvVYZJXwfVOjEbb-wgg0tB5AYKNOJb6soJaP1oJSKnWxSNYrI4FxwYgqJKStaSALsv6FvePLlbE1/pub?gid=338894171&single=true&output=csv",
     "214": "https://docs.google.com/spreadsheets/d/e/2PACX-1vQcVvVYZJXwfVOjEbb-wgg0tB5AYKNOJb6soJaP1oJSKnWxSNYrI4FxwYgqJKStaSALsv6FvePLlbE1/pub?gid=1135646679&single=true&output=csv",
@@ -19,271 +18,315 @@ SHEET_URLS = {
     "505-512": "https://docs.google.com/spreadsheets/d/e/2PACX-1vQcVvVYZJXwfVOjEbb-wgg0tB5AYKNOJb6soJaP1oJSKnWxSNYrI4FxwYgqJKStaSALsv6FvePLlbE1/pub?gid=411570775&single=true&output=csv",
 }
 
-# รหัสผ่านสำหรับครู
-TEACHER_PASSWORD = "1234" 
+TEACHER_PASSWORD = "1234"
 
 # ==========================================
-# 🚀 ส่วนการทำงานระบบ (SYSTEM LOGIC)
+# 🎨 ส่วนตกแต่ง UI (CSS STYLING)
+# ==========================================
+st.set_page_config(page_title="ระบบติดตามผลการเรียน", page_icon="🎓", layout="wide")
+
+# ใส่ CSS เพื่อความสวยงาม (ฟอนต์ Prompt, การ์ดสวยๆ)
+st.markdown("""
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Prompt:wght@300;400;600&display=swap');
+        
+        html, body, [class*="css"]  {
+            font-family: 'Prompt', sans-serif;
+        }
+        
+        /* ตกแต่ง Header */
+        h1, h2, h3 {
+            color: #2c3e50;
+            font-weight: 600;
+        }
+        
+        /* การ์ดรายงานผล */
+        .report-card {
+            background-color: white;
+            padding: 30px;
+            border-radius: 15px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            border: 1px solid #e0e0e0;
+            margin-bottom: 20px;
+        }
+        
+        /* สถานะผ่าน/ไม่ผ่าน */
+        .status-pass {
+            color: #27ae60;
+            font-weight: bold;
+            font-size: 1.2em;
+        }
+        .status-fail {
+            color: #c0392b;
+            font-weight: bold;
+            font-size: 1.2em;
+        }
+        
+        /* ปรับแต่ง Table */
+        .stDataFrame {
+            border-radius: 10px;
+            overflow: hidden;
+        }
+    </style>
+""", unsafe_allow_html=True)
+
+# ==========================================
+# 🚀 ระบบคำนวณ (LOGIC)
 # ==========================================
 
-st.set_page_config(page_title="ระบบติดตามผลการเรียน", page_icon="🏫", layout="wide")
-
-# ฟังก์ชันโหลดข้อมูล
 @st.cache_data(ttl=300)
 def load_data(room_id):
     try:
-        # โหลด Config
+        if room_id not in SHEET_URLS: return None, None, "LinkNotFound"
+        
         config_df = pd.read_csv(CONFIG_URL)
         config_df['SheetName'] = config_df['SheetName'].astype(str)
         
-        # ตรวจสอบว่ามีลิงก์ห้องนี้ไหม
-        if room_id not in SHEET_URLS:
-            return None, None, "LinkNotFound"
-
-        # โหลดคะแนน
-        url = SHEET_URLS[room_id]
-        scores_df = pd.read_csv(url)
+        scores_df = pd.read_csv(SHEET_URLS[room_id])
         scores_df['ห้อง'] = scores_df['ห้อง'].astype(str)
         scores_df['Student_ID'] = scores_df['Email'].apply(lambda x: str(x).split('@')[0])
         
-        # ดึง Config ของห้องนี้
         room_config = config_df[config_df['SheetName'] == room_id]
-        if room_config.empty:
-            return None, None, "ConfigNotFound"
+        if room_config.empty: return None, None, "ConfigNotFound"
             
         return room_config.iloc[0], scores_df, "OK"
-        
-    except Exception as e:
-        return None, None, str(e)
+    except Exception as e: return None, None, str(e)
 
 def get_max_score(header):
     match = re.search(r'\[(\d+)\]', header)
     return int(match.group(1)) if match else 0
 
 def calculate_score(student_row, config, mode="Pre+Mid"):
-    total_score = 0
+    total_score = 0.0
     total_full = 0
     
-    # 1. ส่วน Pre
-    if "Pre" in mode:
-        cols = [c for c in student_row.index if str(c).startswith('Pre_')]
-        raw = student_row[cols].fillna(0).sum()
-        max_raw = sum([get_max_score(c) for c in cols])
-        scale = config['Scale_Pre']
-        score = (raw / max_raw * scale) if max_raw > 0 else 0
-        total_score += score
+    # วนลูปตาม Keyword เพื่อคำนวณ
+    keywords = []
+    if "Pre" in mode: keywords.append(("Pre_", config['Scale_Pre']))
+    if "Mid" in mode: keywords.append(("Mid_", config['Scale_Mid']))
+    if "Post" in mode: keywords.append(("Post_", config['Scale_Post']))
+    if "Final" in mode: keywords.append(("Final_", config['Scale_Final']))
+    
+    for prefix, scale in keywords:
+        cols = [c for c in student_row.index if str(c).startswith(prefix)]
+        if cols:
+            raw = student_row[cols].fillna(0).sum()
+            max_raw = sum([get_max_score(c) for c in cols])
+            
+            # คำนวณสัดส่วน
+            if max_raw > 0:
+                part_score = (raw / max_raw * scale)
+            else:
+                # กรณีไม่มี Max ในชื่อคอลัมน์ หรือ Max=0 ให้ใช้คะแนนดิบเลย (ระวังคะแนนเกิน Scale)
+                part_score = raw 
+            
+            total_score += part_score
         total_full += scale
 
-    # 2. ส่วน Mid
-    if "Mid" in mode:
-        cols = [c for c in student_row.index if str(c).startswith('Mid_')]
-        raw = student_row[cols].fillna(0).sum()
-        max_raw = sum([get_max_score(c) for c in cols])
-        scale = config['Scale_Mid']
-        # ถ้าไม่มีคะแนนเต็มระบุในชื่อ ให้ใช้คะแนนดิบเลย (หรือเทียบสัดส่วนถ้ามี Max)
-        score = (raw / max_raw * scale) if max_raw > 0 else raw 
-        total_score += score
-        total_full += scale
-
-    # 3. ส่วน Post
-    if "Post" in mode:
-        cols = [c for c in student_row.index if str(c).startswith('Post_')]
-        raw = student_row[cols].fillna(0).sum()
-        max_raw = sum([get_max_score(c) for c in cols])
-        scale = config['Scale_Post']
-        score = (raw / max_raw * scale) if max_raw > 0 else 0
-        total_score += score
-        total_full += scale
-
-    # 4. ส่วน Final (เผื่อไว้)
-    if "Final" in mode:
-        cols = [c for c in student_row.index if str(c).startswith('Final_')]
-        raw = student_row[cols].fillna(0).sum()
-        max_raw = sum([get_max_score(c) for c in cols])
-        scale = config['Scale_Final']
-        score = (raw / max_raw * scale) if max_raw > 0 else 0
-        total_score += score
-        total_full += scale
-        
-    return total_score, total_full
+    # 🔥 ปัดเศษเป็นจำนวนเต็มตามที่ต้องการ (Round)
+    # round(31.5) -> 32, round(31.4) -> 31
+    final_score_int = int(round(total_score))
+    
+    return final_score_int, total_full
 
 # ==========================================
-# 🖥️ ส่วนแสดงผลหน้าเว็บ (UI)
+# 🖥️ ส่วนแสดงผล (UI)
 # ==========================================
 
-# Sidebar Menu
 with st.sidebar:
-    st.image("https://cdn-icons-png.flaticon.com/512/3413/3413535.png", width=80)
-    st.title("ระบบวัดผลการเรียน")
-    user_type = st.radio("เลือกกลุ่มผู้ใช้งาน", ["👨‍🎓 นักเรียน", "👩‍🏫 ครูผู้สอน"])
+    st.title("🏫 ระบบวัดผล")
+    user_type = st.radio("", ["👨‍🎓 นักเรียน", "👩‍🏫 ครูผู้สอน"])
     st.markdown("---")
+    st.caption("Developed for Education")
 
-# --- โหมดนักเรียน ---
+# --- STUDENT VIEW ---
 if user_type == "👨‍🎓 นักเรียน":
-    st.header("🎓 ตรวจสอบผลการเรียนรายบุคคล")
+    st.markdown("<h2 style='text-align: center;'>ตรวจสอบผลการเรียนรายบุคคล</h2>", unsafe_allow_html=True)
     
-    # เลือกห้องก่อน
-    selected_room = st.selectbox("เลือกห้องเรียน", list(SHEET_URLS.keys()))
-    
-    # กรอกรหัส
-    st_id = st.text_input("รหัสนักเรียน (5 หลัก)", max_chars=5)
-    
-    if st.button("ดูผลคะแนน") and st_id:
+    col_input1, col_input2 = st.columns([1, 2])
+    with col_input1:
+        selected_room = st.selectbox("เลือกห้องเรียน", list(SHEET_URLS.keys()))
+    with col_input2:
+        st_id = st.text_input("รหัสนักเรียน (5 หลัก)", max_chars=5)
+
+    if st.button("🔍 ตรวจสอบคะแนน", use_container_width=True) and st_id:
         cfg, df, status = load_data(selected_room)
         
         if status == "OK":
             student = df[df['Student_ID'] == st_id]
             if not student.empty:
                 row = student.iloc[0]
-                # นักเรียนดูคะแนนสะสมปัจจุบัน (Pre+Mid+Post)
-                score, full = calculate_score(row, cfg, mode="Pre+Mid+Post") 
+                # นักเรียนดูคะแนนสะสมปัจจุบัน
+                score, full = calculate_score(row, cfg, mode="Pre+Mid+Post")
                 threshold = 0.7 * full
+                is_pass = score >= threshold
                 
-                st.success(f"พบคะแนนของ: **{row['ชื่อ นามสกุล']}**")
+                # --- UI แสดงผลสวยๆ ---
+                st.markdown("---")
                 
-                # แสดง Card คะแนน
-                col1, col2 = st.columns(2)
-                col1.metric("คะแนนสะสม", f"{score:.2f}", f"เต็ม {full}")
-                
-                if score >= threshold:
-                    st.balloons()
-                    st.info(f"✅ **ผ่านเกณฑ์** (ทำได้ {score:.2f} จากเกณฑ์ {threshold:.2f})")
-                else:
-                    st.error(f"⚠️ **ต้องปรับปรุง** (ทำได้ {score:.2f} จากเกณฑ์ {threshold:.2f})")
+                # Container การ์ดขาว
+                with st.container():
+                    st.markdown(f"""
+                    <div class="report-card">
+                        <h3 style="margin-bottom: 0;">{row['ชื่อ นามสกุล']}</h3>
+                        <p style="color: gray;">รหัส: {row['Student_ID']} | ห้อง: {selected_room}</p>
+                        <hr>
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <div>
+                                <span style="font-size: 3em; font-weight: bold; color: #2c3e50;">{score}</span>
+                                <span style="font-size: 1.5em; color: gray;"> / {full}</span>
+                                <br>คะแนนรวม (ปัดเศษ)
+                            </div>
+                            <div style="text-align: right;">
+                                <span class="{ 'status-pass' if is_pass else 'status-fail' }">
+                                    { '✅ ผ่านเกณฑ์' if is_pass else '⚠️ ยังไม่ผ่าน' }
+                                </span>
+                                <br>เกณฑ์ผ่าน: {int(threshold)} คะแนน
+                            </div>
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                    # Progress Bar แบบสี
+                    percent = min(score / full, 1.0)
+                    bar_color = "#27ae60" if is_pass else "#c0392b"
+                    st.markdown(f"**ความคืบหน้าคะแนน:**")
+                    st.progress(percent)
+                    
+                    # รายละเอียด
+                    with st.expander("ดูรายละเอียดคะแนน"):
+                        st.info("คะแนนที่แสดงเป็นคะแนนที่ปัดเศษทศนิยมแล้ว")
             else:
-                st.warning("❌ ไม่พบรหัสนักเรียนนี้ในห้องที่เลือก")
+                st.error("❌ ไม่พบรหัสนักเรียนนี้")
         else:
-            st.error(f"ไม่สามารถโหลดข้อมูลห้อง {selected_room} ได้ ({status})")
+            st.error(f"โหลดข้อมูลไม่ได้: {status}")
 
-# --- โหมดครู ---
+# --- TEACHER VIEW ---
 elif user_type == "👩‍🏫 ครูผู้สอน":
-    st.header("📊 Dashboard สำหรับครู")
+    st.markdown("## 📊 Dashboard สำหรับครู")
     
-    pwd = st.sidebar.text_input("รหัสผ่าน", type="password")
-    
-    if pwd == TEACHER_PASSWORD:
-        # 1. แถบเครื่องมือครู
+    if st.sidebar.text_input("Password", type="password") == TEACHER_PASSWORD:
         c1, c2 = st.columns([1, 2])
-        with c1:
-            room_select = st.selectbox("📂 เลือกห้องเรียนที่ต้องการดู", list(SHEET_URLS.keys()))
-        with c2:
-            cycle_select = st.selectbox("⏱️ เลือกรอบการรายงาน", 
-                                      ["รอบที่ 1 (Pre + Mid)", 
-                                       "รอบที่ 2 (Pre + Mid + Post)",
-                                       "รอบพิเศษ (Pre + Final)"])
+        room_select = c1.selectbox("ห้องเรียน", list(SHEET_URLS.keys()))
+        cycle_select = c2.selectbox("รอบรายงาน", ["รอบ 1 (Pre+Mid)", "รอบ 2 (Pre+Mid+Post)", "Final (Pre+Final)"])
         
-        # แปลงตัวเลือกเป็น Mode การคำนวณ
-        calc_mode = "Pre+Mid"
-        if "รอบที่ 2" in cycle_select: calc_mode = "Pre+Mid+Post"
-        if "รอบพิเศษ" in cycle_select: calc_mode = "Pre+Final"
-
-        st.markdown("---")
+        # Mapping Mode
+        mode_map = {"รอบ 1": "Pre+Mid", "รอบ 2": "Pre+Mid+Post", "Final": "Pre+Final"}
+        calc_mode = next(v for k, v in mode_map.items() if k in cycle_select)
         
-        # โหลดข้อมูล
         cfg, df, status = load_data(room_select)
         
         if status == "OK":
-            # คำนวณคะแนนทั้งห้อง
-            report_list = []
-            for idx, row in df.iterrows():
-                sc, full = calculate_score(row, cfg, mode=calc_mode)
-                is_pass = sc >= (0.7 * full)
-                report_list.append({
-                    "รหัส": row['Student_ID'],
-                    "ชื่อ-สกุล": row['ชื่อ นามสกุล'],
-                    "คะแนนที่ได้": sc,
-                    "คะแนนเต็ม": full,
-                    "ผลการประเมิน": "ผ่าน" if is_pass else "ไม่ผ่าน"
+            # คำนวณทั้งห้อง
+            data = []
+            for _, r in df.iterrows():
+                s, f = calculate_score(r, cfg, mode=calc_mode)
+                # เช็คเกณฑ์จากคะแนนเต็มของช่วงนั้น (70%)
+                threshold = 0.7 * f
+                data.append({
+                    "รหัส": r['Student_ID'],
+                    "ชื่อ": r['ชื่อ นามสกุล'],
+                    "คะแนน": s,
+                    "เต็ม": f,
+                    "ผล": "ผ่าน" if s >= threshold else "ไม่ผ่าน"
                 })
             
-            report_df = pd.DataFrame(report_list)
+            res_df = pd.DataFrame(data)
             
-            # --- ส่วน Dashboard ---
-            # 1. สรุปตัวเลข
-            t1, t2, t3, t4 = st.columns(4)
-            n_pass = len(report_df[report_df['ผลการประเมิน']=='ผ่าน'])
-            n_fail = len(report_df) - n_pass
+            # 1. Summary Cards
+            st.markdown("### ภาพรวม")
+            m1, m2, m3, m4 = st.columns(4)
+            n_pass = sum(res_df['ผล'] == 'ผ่าน')
             
-            t1.metric("นักเรียนทั้งหมด", f"{len(report_df)} คน")
-            t2.metric("ผ่านเกณฑ์", f"{n_pass} คน", f"{n_pass/len(report_df)*100:.1f}%")
-            t3.metric("ไม่ผ่านเกณฑ์", f"{n_fail} คน", f"{n_fail/len(report_df)*100:.1f}%", delta_color="inverse")
-            t4.metric("คะแนนเฉลี่ย", f"{report_df['คะแนนที่ได้'].mean():.2f}")
+            # ใช้ container สร้างการ์ดตัวเลข
+            def metric_card(col, title, value, sub="", color="black"):
+                col.markdown(f"""
+                <div style="background:white; padding:15px; border-radius:10px; border:1px solid #ddd; text-align:center;">
+                    <div style="color:gray; font-size:0.9em;">{title}</div>
+                    <div style="font-size:2em; font-weight:bold; color:{color};">{value}</div>
+                    <div style="font-size:0.8em; color:gray;">{sub}</div>
+                </div>
+                """, unsafe_allow_html=True)
             
-            # 2. กราฟ
-            fig = px.pie(report_df, names='ผลการประเมิน', title=f'สัดส่วนผลการเรียน ห้อง {room_select}', 
-                         color='ผลการประเมิน', color_discrete_map={'ผ่าน':'#66bb6a', 'ไม่ผ่าน':'#ef5350'},
-                         hole=0.4)
-            st.plotly_chart(fig, use_container_width=True)
+            metric_card(m1, "นักเรียนทั้งหมด", len(res_df), "คน")
+            metric_card(m2, "ผ่านเกณฑ์", n_pass, f"{n_pass/len(res_df)*100:.0f}%", "#27ae60")
+            metric_card(m3, "ไม่ผ่านเกณฑ์", len(res_df)-n_pass, f"{(len(res_df)-n_pass)/len(res_df)*100:.0f}%", "#c0392b")
+            metric_card(m4, "คะแนนเฉลี่ย", f"{res_df['คะแนน'].mean():.1f}", "คะแนน")
             
-            # 3. ตารางรายชื่อ
-            st.subheader("📋 รายชื่อและสถานะ")
+            # 2. รายชื่อ & กราฟ
+            st.write("")
+            c_left, c_right = st.columns([2, 1])
             
-            # ตัวกรอง
-            filter_opt = st.radio("แสดงข้อมูล:", ["ทั้งหมด", "เฉพาะคนไม่ผ่าน", "เฉพาะคนผ่าน"], horizontal=True)
-            display_df = report_df
-            if filter_opt == "เฉพาะคนไม่ผ่าน": display_df = report_df[report_df['ผลการประเมิน']=='ไม่ผ่าน']
-            elif filter_opt == "เฉพาะคนผ่าน": display_df = report_df[report_df['ผลการประเมิน']=='ผ่าน']
-            
-            st.dataframe(display_df, use_container_width=True, height=400)
-            
-            # 4. ส่วนพิมพ์รายงาน
-            st.markdown("---")
-            st.subheader("🖨️ พิมพ์รายงานรายบุคคล")
-            st.info("💡 เลือกชื่อนักเรียนด้านล่าง แล้วกด Ctrl+P เพื่อพิมพ์")
-            
-            print_student = st.selectbox("ค้นหาชื่อนักเรียนเพื่อพิมพ์", df['ชื่อ นามสกุล'])
-            
-            if print_student:
-                # ดึงข้อมูลดิบ
-                std_row = df[df['ชื่อ นามสกุล'] == print_student].iloc[0]
-                std_res = report_df[report_df['ชื่อ-สกุล'] == print_student].iloc[0]
+            with c_left:
+                st.subheader("รายชื่อนักเรียน")
+                st.dataframe(
+                    res_df.style.applymap(lambda v: 'color: green; font-weight: bold;' if v=='ผ่าน' else 'color: red; font-weight: bold;' if v=='ไม่ผ่าน' else '', subset=['ผล']),
+                    use_container_width=True, height=400
+                )
                 
-                # สร้างหน้ากระดาษจำลอง
+            with c_right:
+                st.subheader("สัดส่วน")
+                fig = px.pie(res_df, names='ผล', color='ผล', color_discrete_map={'ผ่าน':'#2ecc71', 'ไม่ผ่าน':'#e74c3c'}, hole=0.5)
+                fig.update_layout(margin=dict(t=0, b=0, l=0, r=0))
+                st.plotly_chart(fig, use_container_width=True)
+            
+            # 3. Print Section (สวยงามเหมือน A4)
+            st.markdown("---")
+            st.subheader("🖨️ พิมพ์ใบรายงานผล")
+            
+            p_std = st.selectbox("เลือกนักเรียน", df['ชื่อ นามสกุล'])
+            if p_std:
+                std_row = df[df['ชื่อ นามสกุล'] == p_std].iloc[0]
+                std_res = res_df[res_df['ชื่อ'] == p_std].iloc[0]
+                
+                # สร้างพื้นที่ HTML สำหรับ Print
                 with st.container(border=True):
+                    # Header
                     st.markdown(f"""
-                        <div style='text-align: center'>
-                            <h2>รายงานผลสัมฤทธิ์ทางการเรียน</h2>
-                            <p><b>รายวิชา:</b> {cfg['SubjectName']} | <b>ห้อง:</b> {room_select} | <b>รอบ:</b> {cycle_select}</p>
+                        <div style="text-align:center; padding:20px;">
+                            <h2 style="margin:0;">รายงานผลสัมฤทธิ์ทางการเรียน</h2>
+                            <p style="margin:5px; color:gray;">วิชา {cfg['SubjectName']} | ภาคเรียนที่ 1/2567</p>
                         </div>
-                        <hr>
-                        <div style='font-size: 18px; margin-bottom: 20px;'>
-                            <b>ชื่อ-สกุล:</b> {std_row['ชื่อ นามสกุล']} <br>
-                            <b>รหัสนักเรียน:</b> {std_row['Student_ID']}
+                        <div style="display:flex; justify-content:space-between; background:#f8f9fa; padding:15px; border-radius:8px;">
+                            <div><b>ชื่อ-สกุล:</b> {std_row['ชื่อ นามสกุล']}</div>
+                            <div><b>รหัส:</b> {std_row['Student_ID']}</div>
+                            <div><b>ห้อง:</b> {room_select}</div>
                         </div>
+                        <br>
                     """, unsafe_allow_html=True)
                     
-                    # ตารางคะแนนละเอียด
-                    # หาคอลัมน์ที่เกี่ยวข้องกับรอบนี้
+                    # Table Detail
+                    # หางานที่เกี่ยวข้อง
                     keywords = []
                     if "Pre" in calc_mode: keywords.append("Pre_")
                     if "Mid" in calc_mode: keywords.append("Mid_")
                     if "Post" in calc_mode: keywords.append("Post_")
                     if "Final" in calc_mode: keywords.append("Final_")
                     
-                    detail_data = []
+                    items = []
                     for col in df.columns:
                         if any(k in str(col) for k in keywords) and "[" in str(col):
-                            raw_val = std_row[col]
-                            max_val = get_max_score(col)
-                            # ตัดชื่อให้สวยงาม
-                            task_name = col.split('[')[0].replace('Pre_', '').replace('Mid_', '').replace('Post_', '').replace('Final_', '').replace('HW.', '')
-                            detail_data.append([task_name, raw_val, max_val])
-                            
-                    st.table(pd.DataFrame(detail_data, columns=["รายการประเมิน", "คะแนนที่ได้", "คะแนนเต็ม"]))
+                            items.append([
+                                col.split('[')[0].replace('Pre_', '').replace('Mid_', '').replace('HW.', ''), # ชื่อย่อ
+                                std_row[col], # คะแนนดิบ
+                                get_max_score(col) # เต็ม
+                            ])
                     
-                    # สรุปผล
+                    df_items = pd.DataFrame(items, columns=["รายการประเมิน", "คะแนนดิบ", "คะแนนเต็ม"])
+                    st.table(df_items)
+                    
+                    # Footer Score
+                    status_color = "#27ae60" if std_res['ผล'] == "ผ่าน" else "#c0392b"
                     st.markdown(f"""
-                        <div style='background-color: #f8f9fa; padding: 15px; border-radius: 5px; margin-top: 20px;'>
-                            <h4>สรุปผลการประเมิน</h4>
-                            <p>คะแนนรวม: <b>{std_res['คะแนนที่ได้']:.2f}</b> / {std_res['คะแนนเต็ม']}</p>
-                            <p>สถานะ: <b style='color: {"green" if std_res["ผลการประเมิน"]=="ผ่าน" else "red"}'>{std_res['ผลการประเมิน']} เกณฑ์ร้อยละ 70</b></p>
+                        <div style="border-top:2px solid #eee; padding-top:20px; text-align:right;">
+                            <span style="font-size:1.2em;">คะแนนรวม (สุทธิ): <b>{std_res['คะแนน']}</b> / {std_res['เต็ม']}</span><br>
+                            <span style="font-size:1.5em; font-weight:bold; color:{status_color};">{std_res['ผล']} เกณฑ์ร้อยละ 70</span>
+                        </div>
+                        <br>
+                        <div style="text-align:center; margin-top:30px; color:gray; font-size:0.8em;">
+                            เอกสารฉบับนี้ออกโดยระบบอัตโนมัติ (ข้อมูล ณ วันที่รายงาน)
                         </div>
                     """, unsafe_allow_html=True)
 
-        elif status == "ConfigNotFound":
-            st.error(f"ไม่พบข้อมูลการตั้งค่า (Config) ของห้อง {room_select} ในไฟล์ Config.csv")
-        else:
-            st.error(f"เกิดข้อผิดพลาด: {status}")
-            
-    else:
-        st.warning("กรุณากรอกรหัสผ่านครูเพื่อเข้าถึงข้อมูล")
+        elif status == "LinkNotFound": st.error("ไม่พบลิงก์ห้องนี้")
+        else: st.error(status)
